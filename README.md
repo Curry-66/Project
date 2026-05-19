@@ -25,6 +25,7 @@ my_ai_project/
 ├── setup.py             # 项目安装配置
 ├── .gitignore           # Git 忽略文件
 ├── env.example          # 环境变量示例
+├── report.md            # 项目报告文档
 └── README.md            # 项目说明
 ```
 
