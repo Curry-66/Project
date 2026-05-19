@@ -43,7 +43,7 @@ def test_3_web_page_processing(execute_chained_tool_call):
     print("=" * 60)
     print("测试3：网页处理链式调用")
     print("=" * 60)
-    user_request = "访问 http://163.com/news/article/KRGTR2H0000189FH.html 并提取页面标题，保存到 practice07/title.txt"
+    user_request = "访问 http://163.com/news/article/KRGTR2H0000189FH.html 并提取页面标题，保存到 output/title.txt"
     print(f"用户请求: {user_request}")
     print("\n" + "=" * 60 + "\n")
     
