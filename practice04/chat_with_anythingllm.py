@@ -6,6 +6,10 @@ import time
 import sys
 import subprocess
 
+MAX_HISTORY_TURNS = 5
+MAX_CONTEXT_LENGTH = 3000
+LOG_FILE_PATH = os.path.join(os.getcwd(), 'chat_log.txt')
+
 def load_env():
     """加载环境变量"""
     env_vars = {}
@@ -70,6 +74,119 @@ def curl_request(url, timeout=30):
     except Exception as e:
         return f"错误: {str(e)}"
 
+def get_anythingllm_workspaces(timeout=30):
+    """获取 AnythingLLM 可用的工作区列表
+    
+    Args:
+        timeout (int): 超时时间（秒）
+    
+    Returns:
+        str: 工作区列表或错误信息
+    """
+    try:
+        env_vars = load_env()
+        if not env_vars:
+            return "错误: 无法加载环境变量"
+        
+        anythingllm_api_key = env_vars.get('ANYTHINGLLM_API_KEY')
+        if not anythingllm_api_key:
+            return "错误: 缺少 ANYTHINGLLM_API_KEY 环境变量"
+        
+        # 构建 curl 命令
+        cmd = [
+            'curl',
+            '-s',  # 静默模式
+            '-m', str(timeout),  # 超时时间
+            '-X', 'GET',  # GET 请求
+            '-H', f'Authorization: Bearer {anythingllm_api_key}',  # API 密钥认证
+            'http://localhost:3001/api/v1/workspaces'  # API 地址（复数形式）
+        ]
+        
+        # 执行 curl 命令
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            check=False
+        )
+        
+        # 检查执行结果
+        if result.returncode == 0:
+            # 尝试使用 UTF-8 解码
+            try:
+                return result.stdout.decode('utf-8')
+            except UnicodeDecodeError:
+                return f"错误: 无法解码响应内容"
+        else:
+            # 尝试解码错误信息
+            try:
+                stderr = result.stderr.decode('utf-8', errors='replace')
+            except:
+                stderr = "无法读取错误信息"
+            return f"错误: API 调用失败 (代码 {result.returncode}): {stderr}"
+    except Exception as e:
+        return f"错误: {str(e)}"
+
+def anythingllm_query(message, workspace_slug="default", timeout=30):
+    """使用 curl 调用 AnythingLLM 的聊天 API
+    
+    Args:
+        message (str): 要发送的查询消息
+        workspace_slug (str): 工作区标识符，默认为 "default"
+        timeout (int): 超时时间（秒）
+    
+    Returns:
+        str: API 响应内容或错误信息
+    """
+    try:
+        env_vars = load_env()
+        if not env_vars:
+            return "错误: 无法加载环境变量"
+        
+        anythingllm_api_key = env_vars.get('ANYTHINGLLM_API_KEY')
+        if not anythingllm_api_key:
+            return "错误: 缺少 ANYTHINGLLM_API_KEY 环境变量"
+        
+        # 构建 curl 命令
+        cmd = [
+            'curl',
+            '-s',  # 静默模式
+            '-m', str(timeout),  # 超时时间
+            '-X', 'POST',  # POST 请求
+            '-H', f'Authorization: Bearer {anythingllm_api_key}',  # API 密钥认证
+            '-H', 'Content-Type: application/json',  # JSON 内容类型
+            '-d', json.dumps({'message': message}),  # 发送的消息
+            f'http://localhost:3001/api/v1/workspace/{workspace_slug}/chat'  # API 地址
+        ]
+        
+        # 执行 curl 命令
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            check=False
+        )
+        
+        # 检查执行结果
+        if result.returncode == 0:
+            # 尝试使用 UTF-8 解码
+            try:
+                return result.stdout.decode('utf-8')
+            except UnicodeDecodeError:
+                return f"错误: 无法解码响应内容"
+        else:
+            # 尝试解码错误信息
+            try:
+                stderr = result.stderr.decode('utf-8', errors='replace')
+            except:
+                stderr = "无法读取错误信息"
+            
+            # 错误代码 28 通常是超时错误
+            if result.returncode == 28:
+                return f"错误: API 调用超时 (代码 {result.returncode})。请检查：1. AnythingLLM 是否正在运行 2. API 地址是否正确 3. 网络连接是否正常"
+            else:
+                return f"错误: API 调用失败 (代码 {result.returncode}): {stderr}"
+    except Exception as e:
+        return f"错误: {str(e)}"
+
 def execute_tool(tool_name, parameters):
     """执行工具调用
     
@@ -85,6 +202,14 @@ def execute_tool(tool_name, parameters):
             url = parameters.get("url")
             timeout = parameters.get("timeout", 30)
             return curl_request(url, timeout)
+        elif tool_name == "anythingllm_query":
+            message = parameters.get("message")
+            workspace_slug = parameters.get("workspace_slug", "default")
+            timeout = parameters.get("timeout", 30)
+            return anythingllm_query(message, workspace_slug, timeout)
+        elif tool_name == "get_anythingllm_workspaces":
+            timeout = parameters.get("timeout", 30)
+            return get_anythingllm_workspaces(timeout)
         else:
             return f"错误: 未知工具 '{tool_name}'"
     except Exception as e:
@@ -106,13 +231,25 @@ def call_llm(prompt, max_tokens=1000):
         return
 
     # 系统提示词 - 包含工具调用说明
-    system_prompt = """你是一个智能助手，可以使用以下工具来执行网络访问：
+    system_prompt = """你是一个智能助手，可以使用以下工具：
 
 工具列表：
 1. curl_request
    - 功能：使用 curl 访问网页并返回内容
    - 参数：
      - url: 要访问的网页 URL
+     - timeout: 超时时间（可选，默认 30 秒）
+
+2. anythingllm_query
+   - 功能：调用 AnythingLLM 的聊天 API 查询文档仓库中的信息
+   - 参数：
+     - message: 要发送的查询消息
+     - workspace_slug: 工作区标识符（可选，默认 "default"）
+     - timeout: 超时时间（可选，默认 30 秒）
+
+3. get_anythingllm_workspaces
+   - 功能：获取 AnythingLLM 中可用的工作区列表
+   - 参数：
      - timeout: 超时时间（可选，默认 30 秒）
 
 使用工具的格式：
@@ -132,7 +269,14 @@ url: https://www.example.com
 timeout: 10
 [工具调用结束]
 
-当工具执行完成后，我会返回执行结果，你需要基于结果继续与用户对话。"""
+当工具执行完成后，我会返回执行结果，你需要基于结果继续与用户对话。
+
+使用工具的场景：
+- 当用户提到"文档仓库"、"文件仓库"、"仓库"等词汇时，使用 anythingllm_query 工具
+- 当用户需要查询 AnythingLLM 中的文档或数据时，使用 anythingllm_query 工具
+- 当用户要求访问 AnythingLLM 中的内容时，使用 anythingllm_query 工具
+- 当用户需要知道有哪些工作区可用时，使用 get_anythingllm_workspaces 工具
+- 当遇到 "Workspace is not a valid workspace" 错误时，先使用 get_anythingllm_workspaces 工具获取可用工作区列表"""
 
     full_prompt = f"{system_prompt}\n\n用户问：{prompt}\n\n助手回答："
 
@@ -250,9 +394,11 @@ def main():
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     
-    print("=== AI 聊天助手（带 curl 工具）===")
+    print("=== AI 聊天助手（带 AnythingLLM 工具）===")
     print("输入 'exit' 或按 Ctrl+C 退出聊天")
-    print("可使用的工具：curl_request")
+    print("可使用的工具：curl_request, anythingllm_query, get_anythingllm_workspaces")
+    print("当提到'文档仓库'、'文件仓库'、'仓库'时会自动使用 AnythingLLM 工具")
+    print("输入'获取工作区列表'可查看可用的 AnythingLLM 工作区")
     print("=" * 60)
 
     try:

@@ -22,6 +22,106 @@ def load_env():
         return None
     return env_vars
 
+def list_available_skills():
+    """读取可用技能列表
+    
+    Returns:
+        list: 技能列表，每个技能包含 name 和 description 字段
+    """
+    skills = []
+    # 使用项目根目录的绝对路径
+    project_root = os.path.abspath(os.path.join(os.getcwd(), '..'))
+    skills_dir = os.path.join(project_root, '.agents', 'skills')
+    
+    if not os.path.exists(skills_dir):
+        return skills
+    
+    try:
+        # 遍历所有一级子目录
+        for skill_dir in os.listdir(skills_dir):
+            skill_path = os.path.join(skills_dir, skill_dir)
+            if os.path.isdir(skill_path):
+                skill_file = os.path.join(skill_path, 'SKILL.md')
+                if os.path.exists(skill_file):
+                    try:
+                        with open(skill_file, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                            # 提取 YAML front matter
+                            if content.startswith('---'):
+                                front_matter_end = content.find('---', 3)
+                                if front_matter_end != -1:
+                                    front_matter = content[3:front_matter_end].strip()
+                                    # 解析 YAML front matter
+                                    skill_info = {}
+                                    for line in front_matter.split('\n'):
+                                        line = line.strip()
+                                        if ':' in line:
+                                            key, value = line.split(':', 1)
+                                            key = key.strip()
+                                            value = value.strip()
+                                            if key == 'name':
+                                                skill_info['name'] = value
+                                            elif key == 'description':
+                                                skill_info['description'] = value
+                                    if 'name' in skill_info:
+                                        skills.append(skill_info)
+                    except Exception as e:
+                        print(f"错误: 读取技能文件 {skill_file} 失败: {str(e)}")
+    except Exception as e:
+        print(f"错误: 读取技能目录失败: {str(e)}")
+    
+    return skills
+
+def load_skill_content(skill_name):
+    """加载技能正文内容
+    
+    Args:
+        skill_name (str): 技能名称
+    
+    Returns:
+        str: 技能正文内容（YAML front matter 之后的部分）
+    """
+    # 使用项目根目录的绝对路径
+    project_root = os.path.abspath(os.path.join(os.getcwd(), '..'))
+    skills_dir = os.path.join(project_root, '.agents', 'skills')
+    skill_path = os.path.join(skills_dir, skill_name)
+    skill_file = os.path.join(skill_path, 'SKILL.md')
+    
+    if not os.path.exists(skill_file):
+        return f"错误: 技能文件 {skill_file} 不存在"
+    
+    try:
+        with open(skill_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+            # 提取 YAML front matter 之后的内容
+            if content.startswith('---'):
+                front_matter_end = content.find('---', 3)
+                if front_matter_end != -1:
+                    return content[front_matter_end + 3:].strip()
+            return content
+    except Exception as e:
+        return f"错误: 读取技能文件失败: {str(e)}"
+
+def execute_tool(tool_name, parameters):
+    """执行工具调用
+    
+    Args:
+        tool_name (str): 工具名称
+        parameters (dict): 工具参数
+    
+    Returns:
+        str: 工具执行结果
+    """
+    try:
+        if tool_name == "curl_request":
+            url = parameters.get("url")
+            timeout = parameters.get("timeout", 30)
+            return curl_request(url, timeout)
+        else:
+            return f"错误: 未知工具 '{tool_name}'"
+    except Exception as e:
+        return f"错误: {str(e)}"
+
 def curl_request(url, timeout=30):
     """使用 curl 访问网页并返回内容
     
@@ -70,27 +170,7 @@ def curl_request(url, timeout=30):
     except Exception as e:
         return f"错误: {str(e)}"
 
-def execute_tool(tool_name, parameters):
-    """执行工具调用
-    
-    Args:
-        tool_name (str): 工具名称
-        parameters (dict): 工具参数
-    
-    Returns:
-        str: 工具执行结果
-    """
-    try:
-        if tool_name == "curl_request":
-            url = parameters.get("url")
-            timeout = parameters.get("timeout", 30)
-            return curl_request(url, timeout)
-        else:
-            return f"错误: 未知工具 '{tool_name}'"
-    except Exception as e:
-        return f"错误: {str(e)}"
-
-def call_llm(prompt, max_tokens=1000):
+def call_llm(prompt, max_tokens=1000, skill_content=None):
     """使用标准 http 库调用 LLM"""
     env_vars = load_env()
     if not env_vars:
@@ -105,8 +185,12 @@ def call_llm(prompt, max_tokens=1000):
         print("错误: 缺少必要的环境变量")
         return
 
-    # 系统提示词 - 包含工具调用说明
-    system_prompt = """你是一个智能助手，可以使用以下工具来执行网络访问：
+    # 读取可用技能列表
+    skills = list_available_skills()
+    skills_json = json.dumps({"skills": skills}, ensure_ascii=False)
+
+    # 系统提示词 - 包含工具调用说明和技能信息
+    system_prompt = f"""你是一个智能助手，可以使用以下工具来执行网络访问：
 
 工具列表：
 1. curl_request
@@ -114,6 +198,19 @@ def call_llm(prompt, max_tokens=1000):
    - 参数：
      - url: 要访问的网页 URL
      - timeout: 超时时间（可选，默认 30 秒）
+
+可用技能：
+{skills_json}
+
+当你需要使用某个技能时，请按照以下格式输出：
+[技能调用开始]
+技能名称
+[技能调用结束]
+
+例如：
+[技能调用开始]
+notice
+[技能调用结束]
 
 使用工具的格式：
 当你需要使用工具时，请按照以下格式输出：
@@ -132,7 +229,13 @@ url: https://www.example.com
 timeout: 10
 [工具调用结束]
 
-当工具执行完成后，我会返回执行结果，你需要基于结果继续与用户对话。"""
+当工具执行完成后，我会返回执行结果，你需要基于结果继续与用户对话。
+
+当技能调用完成后，我会返回技能内容，你需要基于技能内容继续与用户对话。"""
+
+    # 如果有技能内容，添加到系统提示词
+    if skill_content:
+        system_prompt += f"\n\n技能内容：\n{skill_content}"
 
     full_prompt = f"{system_prompt}\n\n用户问：{prompt}\n\n助手回答："
 
@@ -199,8 +302,23 @@ timeout: 10
                     text = text[:start] + text[end:]
             return text
         
+        # 处理技能调用
+        if "[技能调用开始]" in response_text and "[技能调用结束]" in response_text:
+            # 提取技能调用部分
+            skill_call_start = response_text.find("[技能调用开始]") + len("[技能调用开始]")
+            skill_call_end = response_text.find("[技能调用结束]")
+            skill_name = response_text[skill_call_start:skill_call_end].strip()
+            
+            # 加载技能内容
+            print(f"\n[加载技能: {skill_name}]")
+            skill_content = load_skill_content(skill_name)
+            print("[技能加载完成]")
+            
+            # 基于技能内容继续对话
+            follow_up_prompt = f"\n请基于技能内容继续与用户对话："
+            call_llm(follow_up_prompt, max_tokens=500, skill_content=skill_content)
         # 处理工具调用
-        if "[工具调用开始]" in response_text and "[工具调用结束]" in response_text:
+        elif "[工具调用开始]" in response_text and "[工具调用结束]" in response_text:
             # 提取工具调用部分
             tool_call_start = response_text.find("[工具调用开始]") + len("[工具调用开始]")
             tool_call_end = response_text.find("[工具调用结束]")
@@ -250,9 +368,10 @@ def main():
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     
-    print("=== AI 聊天助手（带 curl 工具）===")
+    print("=== AI 聊天助手（带技能管理功能）===")
     print("输入 'exit' 或按 Ctrl+C 退出聊天")
     print("可使用的工具：curl_request")
+    print("可使用的技能：notice")
     print("=" * 60)
 
     try:
